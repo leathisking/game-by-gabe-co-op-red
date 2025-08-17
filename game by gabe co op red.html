@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Red & Blue Slinky Robot Jungle Co-op</title>
+<style>
+  body { margin:0; overflow:hidden; background:#000; }
+  #gameCanvas { display:block; margin:0 auto; background:#87ceeb; }
+  #ui { position:absolute; top:10px; left:10px; background:rgba(255,255,255,0.85); padding:10px; border-radius:8px; font-family:sans-serif; z-index:100; }
+  #messages { color:black; margin-top:5px; }
+  button { margin-top:5px; }
+</style>
+</head>
+<body>
+<div id="ui"><div id="screen"></div></div>
+<canvas id="gameCanvas" width="900" height="600"></canvas>
+<script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+<script>
+
+// ===== Game State =====
+let state="controls";
+const uiScreen=document.getElementById("screen");
+const messages=document.createElement("div");
+messages.id="messages";
+uiScreen.appendChild(messages);
+
+// ===== Controls Screen =====
+function showControls(){
+  uiScreen.innerHTML=`
+    <h2>Red & Blue Slinky Robot Jungle Co-op</h2>
+    <p>Controls:</p>
+    <ul>
+      <li>Move: WASD</li>
+      <li>Red Dash: Q</li>
+      <li>Blue Platform: E</li>
+    </ul>
+    <button id="continueBtn">Continue to Lobby</button>
+  `;
+  document.getElementById("continueBtn").onclick=()=>{ state="lobby"; showLobby(); };
+}
+
+// ===== Lobby System =====
+let peer, conn, myId;
+function showLobby(){
+  uiScreen.innerHTML=`
+    <div>
+      <div>Lobby Code: <input type="text" id="joinCode" placeholder="Enter code"></div>
+      <button id="createBtn">Create Lobby</button>
+      <button id="joinBtn">Join Lobby</button>
+      <div id="messages"></div>
+    </div>
+  `;
+  const createBtn=document.getElementById('createBtn');
+  const joinBtn=document.getElementById('joinBtn');
+  const joinCodeInput=document.getElementById('joinCode');
+  const messages=document.getElementById('messages');
+  function addMessage(msg){ messages.innerText=msg; }
+
+  createBtn.onclick=()=>{
+    peer=new Peer();
+    peer.on('open',id=>{ myId=id; addMessage("Lobby created! Share this code: "+myId); });
+    peer.on('connection',c=>{ conn=c; setupConnection(conn); addMessage("Friend connected!"); state="playing"; uiScreen.style.display="none"; });
+  }
+  joinBtn.onclick=()=>{
+    const code=joinCodeInput.value.trim();
+    if(!code){addMessage("Enter a valid code."); return;}
+    peer=new Peer();
+    peer.on('open',id=>{
+      myId=id;
+      conn=peer.connect(code);
+      conn.on('open',()=>{ setupConnection(conn); addMessage("Connected!"); state="playing"; uiScreen.style.display="none"; });
+    });
+  }
+}
+
+// ===== Game Setup =====
+const canvas=document.getElementById('gameCanvas');
+const ctx=canvas.getContext('2d');
+const width=canvas.width, height=canvas.height;
+
+// ===== Jungle Background Layers =====
+const bgLayers=[
+  {speed:0.2, color:"#2e8b57", shapes:[{x:0,y:300,w:900,h:300} ]}, // distant trees
+  {speed:0.5, color:"#228b22", shapes:[{x:50,y:350,w:100,h:200},{x:400,y:320,w:120,h:220},{x:700,y:330,w:120,h:210}]}, // mid trees
+  {speed:1, color:"#006400", shapes:[{x:150,y:450,w:80,h:150},{x:500,y:430,w:100,h:170}]} // foreground bushes
+];
+
+// ===== Player Class =====
+class Player{
+  constructor(color,x,y){
+    this.color=color; this.x=x; this.y=y;
+    this.baseWidth=40; this.baseHeight=60;
+    this.vx=0; this.vy=0; this.onGround=false;
+    this.abilityCooldown=0;
+    this.slinkyX=0; this.slinkyY=0;
+  }
+  draw(){
+    let stretchX=1+this.slinkyX; let stretchY=1+this.slinkyY;
+    let w=this.baseWidth*stretchX; let h=this.baseHeight*stretchY;
+    ctx.fillStyle=this.color; ctx.fillRect(this.x, this.y, w, h);
+    ctx.fillStyle="#222"; ctx.fillRect(this.x+5,this.y-20,w-10,20);
+    ctx.fillStyle="yellow"; ctx.fillRect(this.x+10,this.y-15,8,8); ctx.fillRect(this.x+w-18,this.y-15,8,8);
+    ctx.fillStyle=this.color; ctx.fillRect(this.x-10,this.y+10,10,40); ctx.fillRect(this.x+w,this.y+10,10,40);
+    ctx.fillRect(this.x+5,this.y+h,10,20); ctx.fillRect(this.x+w-15,this.y+h,10,20);
+  }
+  update(){
+    this.vy+=0.8; this.y+=this.vy; this.x+=this.vx;
+    if(this.y+this.baseHeight>height-50){ this.y=height-50-this.baseHeight; this.vy=0; this.onGround=true; }
+    else this.onGround=false;
+    this.vx*=0.8; if(this.abilityCooldown>0) this.abilityCooldown--;
+
+    // Slinky physics
+    let targetX=0,targetY=0;
+    if(this.onGround){ targetY=-0.1; targetX=0.05*Math.sign(this.vx); }
+    else{ targetY=0.1; targetX=0; }
+    this.slinkyX+=(targetX-this.slinkyX)*0.2;
+    this.slinkyY+=(targetY-this.slinkyY)*0.2;
+  }
+}
+
+// ===== Players =====
+const redPlayer=new Player("red",100,500);
+const bluePlayer=new Player("blue",200,500);
+let players={red:redPlayer,blue:bluePlayer};
+
+// ===== Levels & Platforms =====
+const levels=[
+  [{x:0,y:550,w:900,h:50},{x:200,y:450,w:150,h:20},{x:450,y:400,w:200,h:20},{x:700,y:350,w:150,h:20}],
+  [{x:0,y:550,w:900,h:50},{x:50,y:450,w:150,h:20},{x:250,y:350,w:150,h:20},{x:500,y:250,w:150,h:20}],
+  [{x:0,y:550,w:900,h:50},{x:100,y:450,w:150,h:20},{x:400,y:350,w:150,h:20},{x:650,y:250,w:150,h:20}]
+];
+let currentLevel=0;
+let platforms=[...levels[currentLevel]];
+
+// ===== Particles =====
+let particles=[];
+function createParticles(x,y,color){ for(let i=0;i<10;i++){ particles.push({x:x,y:y,vx:(Math.random()-0.5)*4,vy:(Math.random()-1.5)*2,life:30,color:color}); } }
+function updateParticles(){ particles.forEach((p,i)=>{ p.x+=p.vx; p.y+=p.vy; p.life--; ctx.fillStyle=p.color; ctx.fillRect(p.x,p.y,4,4); if(p.life<=0) particles.splice(i,1); }); }
+
+// ===== Enemy (Dragon) =====
+class Dragon{
+  constructor(x,y,w,h){ this.x=x; this.y=y; this.w=w; this.h=h; this.vx=2; this.flap=0; }
+  update(){ this.x+=this.vx; this.flap+=0.2; if(this.x<0||this.x+this.w>width) this.vx*=-1; }
+  draw(){
+    ctx.fillStyle="green";
+    ctx.fillRect(this.x,this.y+Math.sin(this.flap)*5,this.w,this.h); // bouncy flap
+    ctx.fillStyle="#006400";
+    ctx.fillRect(this.x-10,this.y+10,10,10); ctx.fillRect(this.x+this.w,this.y+10,10,10);
+    ctx.fillStyle="yellow"; ctx.fillRect(this.x+5,this.y+5,5,5); ctx.fillRect(this.x+this.w-10,this.y+5,5,5);
+  }
+}
+let enemies=[new Dragon(300,500,40,40), new Dragon(500,300,40,40)];
+
+// ===== Draw Platforms =====
+function drawPlatforms(){ ctx.fillStyle="#555"; platforms.forEach(p=>ctx.fillRect(p.x,p.y,p.w,p.h)); }
+
+// ===== Draw Jungle Background =====
+function drawBackground(){
+  bgLayers.forEach(layer=>{
+    ctx.fillStyle=layer.color;
+    layer.shapes.forEach(s=>{ ctx.fillRect(s.x, s.y, s.w, s.h); });
+  });
+}
+
+// ===== Controls =====
+const keys={};
+document.addEventListener('keydown',e=>{ keys[e.key]=true; });
+document.addEventListener('keyup',e=>{ keys[e.key]=false; });
+
+// ===== Abilities =====
+function handleAbilities(player){
+  if(player.color==="red" && keys["q"] && player.abilityCooldown===0){ player.vx+=12; player.abilityCooldown=60; createParticles(player.x+player.baseWidth/2,player.y+player.baseHeight/2,"red"); addMessage("Red dashes! GABE is the bestand!"); }
+  if(player.color==="blue" && keys["e"] && player.abilityCooldown===0){ platforms.push({x:player.x+player.baseWidth+10, y:player.y+50, w:100, h:10,temp:true,life:180}); player.abilityCooldown=120; createParticles(player.x+player.baseWidth/2,player.y+player.baseHeight/2,"blue"); addMessage("Blue creates platform!"); }
+}
+
+// ===== Messages =====
+function addMessage(msg){ const m=document.getElementById("messages"); if(m) m.innerText=msg; }
+
+// ===== Game Loop =====
+function gameLoop(){
+  ctx.clearRect(0,0,width,height);
+  drawBackground();
+  if(state==="playing"){
+    drawPlatforms();
+    enemies.forEach(e=>{ e.update(); e.draw(); });
+    Object.values(players).forEach(p=>{ handleAbilities(p); p.update(); p.draw(); });
+
+    platforms.forEach(plat=>{
+      Object.values(players).forEach(p=>{
+        if(p.x+p.baseWidth>plat.x && p.x<plat.x+plat.w && p.y+p.baseHeight>plat.y && p.y+p.baseHeight<plat.y+plat.h+20 && p.vy>=0){
+          p.y=plat.y-p.baseHeight; p.vy=0; p.onGround=true;
+        }
+        if(plat.temp){ plat.life--; if(plat.life<=0) platforms.splice(platforms.indexOf(plat),1);}
+      });
+    });
+
+    enemies.forEach(e=>{ Object.values(players).forEach(p=>{
+      if(p.x<p.x+e.w && p.x+p.baseWidth>e.x && p.y<p.y+e.h && p.y+p.baseHeight>e.y){ addMessage("Ouch! Restart level..."); resetPlayers(); }
+    }); });
+
+    if(redPlayer.x>width-50 && bluePlayer.x>width-50){ nextLevel(); }
+
+    updateParticles();
+  }
+  requestAnimationFrame(gameLoop);
+}
+
+// ===== Level Management =====
+function resetPlayers(){ redPlayer.x=100; redPlayer.y=500; bluePlayer.x=200; bluePlayer.y=500; }
+function nextLevel(){
+  currentLevel++; if(currentLevel>=levels.length){ addMessage("You finished all levels! GABE rules!"); state="controls"; uiScreen.style.display="block"; showControls(); return; }
+  platforms=[...levels[currentLevel]];
+  enemies=[new Dragon(200,500,40,40), new Dragon(400,300,40,40)];
+  resetPlayers(); addMessage("Level "+(currentLevel+1));
+}
+
+// ===== Multiplayer Lobby =====
+function setupConnection(connection){
+  connection.on('data',data=>{ if(data.type==="playerUpdate"){ if(data.color==="red") redPlayer.x=data.x, redPlayer.y=data.y; if(data.color==="blue") bluePlayer.x=data.x, bluePlayer.y=data.y; } });
+  setInterval(()=>{ Object.values(players).forEach(p=>{ connection.send({type:"playerUpdate", color:p.color, x:p.x, y:p.y}); }); },50);
+}
+
+// ===== Start Game =====
+showControls();
+requestAnimationFrame(gameLoop);
+
+</script>
+</body>
+</html>
